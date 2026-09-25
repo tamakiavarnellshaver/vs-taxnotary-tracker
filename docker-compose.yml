@@ -1,0 +1,86 @@
+services:
+  # ---------------------------------------------------------------------
+  # test: runs the automated test suite. This is the tier an agent (or CI)
+  # should reach for by default — both suites run against an in-memory
+  # SQLite DB and mocked fetch calls, so it needs NO network at all and
+  # sits on an internal-only network with no route out.
+  # ---------------------------------------------------------------------
+  test:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    working_dir: /workspace
+    command: sh -c "npm run install:all && npm test"
+    volumes:
+      - .:/workspace
+      - server_node_modules:/workspace/server/node_modules
+      - client_node_modules:/workspace/client/node_modules
+    networks:
+      - internal_only
+    environment:
+      - NODE_ENV=test
+
+  # ---------------------------------------------------------------------
+  # agent: the interactive dev environment. Read-write access to the
+  # project files, can install dependencies or push commits, but only
+  # ever reaches the internet through the egress-proxy below, which
+  # allowlists npm + GitHub and denies everything else.
+  # ---------------------------------------------------------------------
+  agent:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    working_dir: /workspace
+    stdin_open: true
+    tty: true
+    volumes:
+      # Bind-mount the whole repo (including .git) read-write. This is
+      # the SMALLEST folder that still lets the agent do its job — not
+      # the Desktop, not the home folder, just this project.
+      - .:/workspace
+      # Named volumes for node_modules: better-sqlite3 compiles a native
+      # binary, and a host (Windows) build is not compatible with the
+      # Linux container. Keeping node_modules in named volumes (rather
+      # than the bind mount) avoids that mismatch and persists installs
+      # across `docker compose up` runs.
+      - server_node_modules:/workspace/server/node_modules
+      - client_node_modules:/workspace/client/node_modules
+      # Read-only: git identity only, never credentials.
+      - ~/.gitconfig:/home/agent/.gitconfig:ro
+    environment:
+      # Populate from a local, untracked .env if the agent needs to push.
+      # Never baked into the image.
+      - GITHUB_TOKEN=${GITHUB_TOKEN:-}
+      - HTTP_PROXY=http://egress-proxy:3128
+      - HTTPS_PROXY=http://egress-proxy:3128
+      - NO_PROXY=localhost,127.0.0.1
+    networks:
+      - internal_only
+    depends_on:
+      - egress-proxy
+
+  # ---------------------------------------------------------------------
+  # egress-proxy: the ONLY path out of the internal_only network. Squid,
+  # configured in docker/proxy/squid.conf, allowlists npm + GitHub and
+  # denies (and logs) everything else.
+  # ---------------------------------------------------------------------
+  egress-proxy:
+    image: ubuntu/squid:latest
+    volumes:
+      - ./docker/proxy/squid.conf:/etc/squid/squid.conf:ro
+    networks:
+      - internal_only
+      - internet
+
+networks:
+  # No default route to the outside world. `agent` and `test` live here.
+  internal_only:
+    driver: bridge
+    internal: true
+  # Only egress-proxy touches this network, which does reach the internet.
+  internet:
+    driver: bridge
+
+volumes:
+  server_node_modules:
+  client_node_modules:
