@@ -21,7 +21,10 @@ RUN apt-get update \
 # Non-root user. The agent only ever needs to read/write files under
 # /workspace — dropping root limits the blast radius of a bad
 # `npm install` postinstall script or any other compromised dependency.
-RUN useradd --create-home --shell /bin/bash --uid 1000 agent
+# node:22-bookworm-slim already ships a "node" user at UID 1000, so we
+# reuse that account instead of colliding on --uid 1000.
+RUN usermod --login agent --home /home/agent --move-home node \
+    && groupmod --new-name agent node
 USER agent
 WORKDIR /workspace
 
